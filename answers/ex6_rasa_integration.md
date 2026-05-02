@@ -10,6 +10,19 @@ Rasa-shaped message with canonical types → urllib POST to Rasa →
 parse response for {action: committed} or {action: rejected} custom
 slots.
 
+Support for bidirectional handoff is implemented via CALM flows:
+(1) dynamic action routing in validator.py allows the loop half to
+specify the starting intent (e.g. /confirm_booking or /resume_from_loop).
+(2) the `request_research` flow handles rejections by uttering
+`utter_request_research`, signaling the loop half to perform more research.
+(3) the `resume_from_loop` flow provides a re-entry point once new data
+is found.
+
+Trace logs from session `sess_df45d51b9abe` confirm that `RasaStructuredHalf.run`
+successfully routes metadata through the `rasa_webhook` tool. The response
+is parsed for `committed` or `rejected` actions, as seen in the trace event
+`booking confirmed by rasa (ref=BK-7D401E9E)`.
+
 For offline mode we spawn a stdlib http.server thread that mimics a
 Rasa webhook. It always confirms, which is enough for unit tests.
 Rejection is exercised in Ex7 where the loop half's arguments drive

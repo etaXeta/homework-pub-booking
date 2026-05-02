@@ -356,15 +356,20 @@ def main() -> int:
         # Find the newest session across sessions/ and the platform data dir
         candidates: list[Path] = []
         if Path("sessions").exists():
-            candidates.extend(Path("sessions").glob("sess_*"))
+            candidates.extend(Path("sessions").rglob("sess_*"))
         data_root = _platform_data_dir()
         if data_root.exists():
             candidates.extend(data_root.glob("examples/*/sess_*"))
-        candidates = [c for c in candidates if c.is_dir()]
+
+        # Filter for directories that have a trace.jsonl
+        candidates = [c for c in candidates if c.is_dir() and (c / "logs" / "trace.jsonl").exists()]
+
         if not candidates:
-            print(_C.r("✗ no sessions found. Run a scenario first (e.g. make ex5-real)."))
+            print(_C.r("✗ no sessions with traces found. Run a scenario first (e.g. make ex5)."))
             return 1
-        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+        # Sort by modification time of the trace file (more accurate for "latest activity")
+        candidates.sort(key=lambda p: (p / "logs" / "trace.jsonl").stat().st_mtime, reverse=True)
         return narrate_session(candidates[0])
 
     if args.session:

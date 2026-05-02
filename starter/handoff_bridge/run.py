@@ -19,6 +19,7 @@ from sovereign_agent.halves.loop import LoopHalf
 from sovereign_agent.planner import DefaultPlanner
 from sovereign_agent.session.directory import create_session
 
+from scripts.session_utils import sync_session_artifacts
 from starter.edinburgh_research.tools import build_tool_registry
 from starter.handoff_bridge.bridge import HandoffBridge
 from starter.rasa_half.structured_half import RasaStructuredHalf, spawn_mock_rasa
@@ -154,6 +155,7 @@ async def run_scenario(real: bool) -> int:
         try:
             result = await bridge.run(session, {"task": "book for party of 12 in Haymarket"})
         finally:
+            sync_session_artifacts(session, "ex7-handoff-bridge")
             if server is not None:
                 server.shutdown()
 

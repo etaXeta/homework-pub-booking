@@ -45,8 +45,23 @@ flows:
             then: rejected
           - else: confirmed
       - id: rejected
-        action: utter_booking_rejected
-        next: END
+        link: request_research
       - id: confirmed
         action: utter_booking_confirmed
         next: END
+
+  resume_from_loop:
+    description: >
+      Re-enter the booking flow after the loop half has provided
+      new venue data.
+    steps:
+      - action: utter_resuming_from_loop
+      - link: confirm_booking
+
+  request_research:
+    description: >
+      Signal that the current venue is unsuitable and we need
+      to return to the loop half to research alternatives.
+    steps:
+      - action: utter_booking_rejected
+      - action: utter_request_research

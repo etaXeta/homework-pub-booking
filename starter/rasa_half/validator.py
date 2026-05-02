@@ -89,9 +89,13 @@ def normalise_booking_payload(raw: dict) -> dict:
 
     stable_suffix = hashlib.sha1(f"{venue_id}-{date_iso}-{time_24h}".encode()).hexdigest()[:8]
 
+    action = raw.get("action", "confirm_booking")
+    if not action.startswith("/"):
+        action = f"/{action}"
+
     return {
         "sender": f"homework-{stable_suffix}",
-        "message": "/confirm_booking",
+        "message": action,
         "metadata": {
             "booking": {
                 "venue_id": venue_id,

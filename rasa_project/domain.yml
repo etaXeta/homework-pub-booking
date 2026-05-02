@@ -44,6 +44,10 @@ responses:
     - text: "Booking confirmed. Reference: {booking_reference}."
   utter_booking_rejected:
     - text: "Sorry, we can't accept this booking. Reason: {validation_error}"
+  utter_resuming_from_loop:
+    - text: "I've got the research data. Let me try to confirm the booking."
+  utter_request_research:
+    - text: "I need to go back and research other options."
 
 actions:
   - action_validate_booking

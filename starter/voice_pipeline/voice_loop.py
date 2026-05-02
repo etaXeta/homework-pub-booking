@@ -3,7 +3,7 @@
 Two modes:
   * text mode: stdin → manager → stdout. Free, no mic needed.
   * voice mode: mic → Speechmatics realtime STT → manager →
-    Rime.ai Arcana TTS → speakers.
+  * Rime.ai TTS → speakers.
 
 Both modes write identical trace events so downstream grading
 doesn't care which ran.
@@ -18,9 +18,11 @@ Voice mode degrades gracefully:
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import sys
 import wave
+import warnings
 
 from sovereign_agent.session.directory import Session
 from sovereign_agent.session.state import now_utc
@@ -78,9 +80,11 @@ async def run_text_mode(session: Session, persona: ManagerPersona, max_turns: in
 
 
 # ---------------------------------------------------------------------------
-# Voice mode — real Speechmatics STT + Rime Arcana TTS
+# Voice mode — real Speechmatics STT + Rime TTS
 # ---------------------------------------------------------------------------
-async def run_voice_mode(session: Session, persona: ManagerPersona, max_turns: int = 6) -> None:
+async def run_voice_mode(
+    session: Session, persona: ManagerPersona, max_turns: int = 6, device_id: int | None = None
+) -> None:
     """Voice mode. Real mic capture → Speechmatics STT → manager → Rime TTS."""
 
     # ── preflight: keys + deps ─────────────────────────────────────
@@ -116,7 +120,7 @@ async def run_voice_mode(session: Session, persona: ManagerPersona, max_turns: i
         await run_text_mode(session, persona, max_turns=max_turns)
         return
 
-    # Rime is optional — we fall through to text-reply-only if missing
+    # Rime is preferred; fall back to text-reply-only if missing
     rime_enabled = bool(rime_key)
     if not rime_enabled:
         print(
@@ -134,7 +138,7 @@ async def run_voice_mode(session: Session, persona: ManagerPersona, max_turns: i
 
         # ── capture audio ──────────────────────────────────────────
         try:
-            audio_bytes = _record_until_silence(sd, session, turn_idx)
+            audio_bytes = _record_until_silence(sd, session, turn_idx, device_id=device_id)
         except Exception as e:  # noqa: BLE001
             print(f"✗ mic capture failed: {e}", file=sys.stderr)
             print(
@@ -199,7 +203,7 @@ async def run_voice_mode(session: Session, persona: ManagerPersona, max_turns: i
             }
         )
 
-        # ── speak reply via Rime TTS (if enabled) ──────────────────
+        # ── speak reply via Rime TTS (if enabled) ─────────────
         if rime_enabled:
             try:
                 await _speak_rime(manager_text, rime_key, sd)
@@ -213,8 +217,8 @@ async def run_voice_mode(session: Session, persona: ManagerPersona, max_turns: i
 # ---------------------------------------------------------------------------
 # Audio capture
 # ---------------------------------------------------------------------------
-def _record_until_silence(sd, session: Session, turn: int) -> bytes:
-    """Record from the default mic until SILENCE_TIMEOUT_S of silence or
+def _record_until_silence(sd, session: Session, turn: int, device_id: int | None = None) -> bytes:
+    """Record from the specified mic (or default) until SILENCE_TIMEOUT_S of silence or
     MAX_UTTERANCE_S hit. Returns raw 16-bit PCM @ SAMPLE_RATE mono.
 
     Uses a simple RMS threshold — fine for quiet rooms, may need bumping
@@ -223,7 +227,7 @@ def _record_until_silence(sd, session: Session, turn: int) -> bytes:
     """
     import numpy as np
 
-    threshold = 500  # int16 RMS amplitude below which we call it silence
+    threshold = 100  # lowered from 500 as it was too aggressive in quiet environments
     chunk_ms = 100
     chunk_samples = int(SAMPLE_RATE * chunk_ms / 1000)
     silence_chunks_needed = int(SILENCE_TIMEOUT_S * 1000 / chunk_ms)
@@ -233,7 +237,18 @@ def _record_until_silence(sd, session: Session, turn: int) -> bytes:
     total_ms = 0
     speech_started = False
 
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="int16") as stream:
+    # Use specified device or default
+    stream_args = {
+        "samplerate": SAMPLE_RATE,
+        "channels": CHANNELS,
+        "dtype": "int16",
+    }
+    if device_id is not None:
+        stream_args["device"] = device_id
+
+    with sd.InputStream(**stream_args) as stream:
+        actual_device = sd.query_devices(stream.device, "input")["name"]
+        print(f"   [DEBUG] Using input device: {actual_device} (ID: {stream.device})", file=sys.stderr)
         while True:
             data, _overflow = stream.read(chunk_samples)
             if hasattr(data, "tobytes"):
@@ -250,6 +265,10 @@ def _record_until_silence(sd, session: Session, turn: int) -> bytes:
             else:
                 rms = int(np.sqrt(np.mean(arr.astype(np.float64) ** 2)))
 
+            # Debug log to help tune threshold
+            if total_ms % 1000 == 0:
+                print(f"   [DEBUG] RMS: {rms}", file=sys.stderr)
+
             if rms >= threshold:
                 speech_started = True
                 silence_chunks = 0
@@ -261,8 +280,8 @@ def _record_until_silence(sd, session: Session, turn: int) -> bytes:
                 break
             if total_ms >= MAX_UTTERANCE_S * 1000:
                 break
-            # Grace: if no speech in first 3s, exit with empty
-            if not speech_started and total_ms >= 3000:
+            # Grace: if no speech in first 5s (increased from 3s), exit with empty
+            if not speech_started and total_ms >= 5000:
                 return b""
 
     audio_bytes = b"".join(captured)
@@ -336,15 +355,104 @@ async def _transcribe_speechmatics(
 
 
 # ---------------------------------------------------------------------------
+# ElevenLabs TTS + playback
+# ---------------------------------------------------------------------------
+async def _speak_elevenlabs(text: str, api_key: str, sd) -> None:
+    """Call ElevenLabs TTS, get MP3 back, play it."""
+    import httpx
+
+    # Using the "George" voice as a reasonable proxy for a mature male voice,
+    # though the persona is Alasdair (Scottish).
+    voice_id = "JBFqnCBsd6RMkjVDRZzb"
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+
+    payload = {
+        "text": text,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+        },
+    }
+    headers = {
+        "xi-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as http:
+        resp = await http.post(url, json=payload, headers=headers)
+        if resp.status_code != 200:
+            raise RuntimeError(f"ElevenLabs {resp.status_code}: {resp.text[:200]}")
+        mp3_bytes = resp.content
+
+    # Decode MP3 → PCM
+    try:
+        from io import BytesIO
+        import numpy as np
+
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning, module="pydub.utils")
+                from pydub import AudioSegment  # type: ignore[import-not-found]
+                segment = AudioSegment.from_file(BytesIO(mp3_bytes), format="mp3")
+            # Resample + convert to int16 mono for sounddevice
+            segment = segment.set_frame_rate(SAMPLE_RATE).set_channels(1).set_sample_width(2)
+            samples = np.array(segment.get_array_of_samples(), dtype=np.int16)
+        except (ImportError, Exception):
+            # Fallback to pure-python 'mp3' (pymp3) library if pydub/ffmpeg fails
+            try:
+                import mp3
+                decoder = mp3.Decoder(BytesIO(mp3_bytes))
+                if not decoder.is_valid():
+                    raise RuntimeError("Invalid MP3 data")
+                
+                # pymp3 read() returns bytes (int16 samples)
+                raw_bytes = decoder.read(10 * 60 * decoder.get_sample_rate() * decoder.get_channels() * 2)
+                samples = np.frombuffer(raw_bytes, dtype=np.int16)
+                
+                # Basic mono conversion if needed (assuming pymp3 returns interleaved)
+                if decoder.get_channels() > 1:
+                    samples = samples.reshape(-1, decoder.get_channels())
+                    samples = samples.mean(axis=1).astype(np.int16)
+                
+                # Resample if needed (very simple decimation/duplication for 16k/22k/44k)
+                if decoder.get_sample_rate() != SAMPLE_RATE:
+                    import scipy.signal
+                    # If scipy is not available, we just play at original rate or error
+                    try:
+                        num_samples = int(len(samples) * SAMPLE_RATE / decoder.get_sample_rate())
+                        samples = scipy.signal.resample(samples, num_samples).astype(np.int16)
+                    except ImportError:
+                        # Just use original rate for playback if we can't resample
+                        sd.play(samples, samplerate=decoder.get_sample_rate())
+                        sd.wait()
+                        return
+
+            except ImportError:
+                print(
+                    "   (pydub/ffmpeg failed and 'mp3' library not found; can't decode mp3)",
+                    file=sys.stderr,
+                )
+                return
+
+        sd.play(samples, samplerate=SAMPLE_RATE)
+        sd.wait()
+
+    except Exception as e:
+        print(f"   ⚠ TTS playback failed: {e} (continuing)", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Rime.ai Arcana TTS + playback
 # ---------------------------------------------------------------------------
 async def _speak_rime(text: str, api_key: str, sd) -> None:
     """Call Rime.ai TTS, get MP3 back, play it."""
     import httpx
 
+    # Rime Arcana TTS
     url = "https://users.rime.ai/v1/rime-tts"
     payload = {
-        "speaker": "luna",  # an Arcana voice; change if Rime renames
+        "speaker": "luna",
         "text": text,
         "modelId": "arcana",
         "audioFormat": "mp3",
@@ -358,32 +466,56 @@ async def _speak_rime(text: str, api_key: str, sd) -> None:
     async with httpx.AsyncClient(timeout=30.0) as http:
         resp = await http.post(url, json=payload, headers=headers)
         if resp.status_code != 200:
-            # Rime sends JSON error for 4xx
             raise RuntimeError(f"Rime {resp.status_code}: {resp.text[:200]}")
         mp3_bytes = resp.content
 
-    # Decode MP3 → PCM via pydub (stdlib can't handle mp3)
+    # Decode MP3 → PCM
     try:
         from io import BytesIO
+        import numpy as np
 
-        from pydub import AudioSegment  # type: ignore[import-not-found]
-    except ImportError:
-        print(
-            "   (pydub not installed; can't decode mp3 for playback — "
-            "install with: uv sync --extra voice)",
-            file=sys.stderr,
-        )
-        return
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning, module="pydub.utils")
+                from pydub import AudioSegment  # type: ignore[import-not-found]
+                segment = AudioSegment.from_file(BytesIO(mp3_bytes), format="mp3")
+            # Resample + convert to int16 mono for sounddevice
+            segment = segment.set_frame_rate(SAMPLE_RATE).set_channels(1).set_sample_width(2)
+            samples = np.array(segment.get_array_of_samples(), dtype=np.int16)
+        except (ImportError, Exception):
+            # Fallback to pure-python 'mp3' (pymp3) library if pydub/ffmpeg fails
+            try:
+                import mp3
+                decoder = mp3.Decoder(BytesIO(mp3_bytes))
+                if not decoder.is_valid():
+                    raise RuntimeError("Invalid MP3 data")
+                
+                # pymp3 read() returns bytes (int16 samples)
+                raw_bytes = decoder.read(10 * 60 * decoder.get_sample_rate() * decoder.get_channels() * 2)
+                samples = np.frombuffer(raw_bytes, dtype=np.int16)
+                
+                if decoder.get_channels() > 1:
+                    samples = samples.reshape(-1, decoder.get_channels())
+                    samples = samples.mean(axis=1).astype(np.int16)
+                
+                if decoder.get_sample_rate() != SAMPLE_RATE:
+                    # If we can't resample, play at the decoder's rate
+                    sd.play(samples, samplerate=decoder.get_sample_rate())
+                    sd.wait()
+                    return
 
-    segment = AudioSegment.from_file(BytesIO(mp3_bytes), format="mp3")
-    # Resample + convert to int16 mono for sounddevice
-    segment = segment.set_frame_rate(SAMPLE_RATE).set_channels(1).set_sample_width(2)
+            except ImportError:
+                print(
+                    "   (pydub/ffmpeg failed and 'mp3' library not found; can't decode mp3)",
+                    file=sys.stderr,
+                )
+                return
 
-    import numpy as np
+        sd.play(samples, samplerate=SAMPLE_RATE)
+        sd.wait()
 
-    samples = np.array(segment.get_array_of_samples(), dtype=np.int16)
-    sd.play(samples, samplerate=SAMPLE_RATE)
-    sd.wait()
+    except Exception as e:
+        print(f"   ⚠ TTS playback failed: {e} (continuing)", file=sys.stderr)
 
 
 __all__ = ["run_text_mode", "run_voice_mode"]

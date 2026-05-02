@@ -265,7 +265,7 @@ Ex8 supports TWO modes:
 
 - **Text mode** (default): simulates voice by using printed transcripts.
   No extra setup. Works for everyone.
-- **Voice mode**: real STT via Speechmatics and real TTS via ElevenLabs.
+- **Voice mode**: real STT via Speechmatics and real TTS via Rime.ai.
   Requires two additional API keys.
 
 Text-only mode is sufficient for full credit on most of Ex8. Voice mode is

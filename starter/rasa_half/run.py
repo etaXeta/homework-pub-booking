@@ -28,6 +28,7 @@ import sys
 from sovereign_agent._internal.paths import example_sessions_dir
 from sovereign_agent.session.directory import create_session
 
+from scripts.session_utils import sync_session_artifacts
 from starter.rasa_half.structured_half import (
     RasaHostLifecycle,
     RasaStructuredHalf,
@@ -42,7 +43,7 @@ async def run_scenario(real: bool, auto: bool) -> int:
             task="Confirm a booking through the Rasa structured half.",
             sessions_dir=sessions_root,
         )
-        print(f"📂 Session {session.session_id}")
+        print(f"[SESSION] {session.session_id}")
         print(f"   dir: {session.directory}")
 
         sample_booking = {
@@ -60,7 +61,7 @@ async def run_scenario(real: bool, auto: bool) -> int:
             # Tier 3 — auto-spawn.
             log_dir = session.logs_dir / "rasa"
             log_dir.mkdir(parents=True, exist_ok=True)
-            print(f"   Rasa logs: {log_dir}")
+            print(f"[OK] Rasa logs: {log_dir}")
             print(
                 "   (tier 3 auto-spawn mode — the scenario spawns Rasa + action\n"
                 "    server subprocesses, runs, then tears them down)"
@@ -68,7 +69,10 @@ async def run_scenario(real: bool, auto: bool) -> int:
             async with RasaHostLifecycle(log_dir=log_dir) as rasa_url:
                 print(f"   Rasa URL: {rasa_url}")
                 half = RasaStructuredHalf(rasa_url=rasa_url, request_timeout_s=30.0)
-                result = await half.run(session, sample_booking)
+                try:
+                    result = await half.run(session, sample_booking)
+                finally:
+                    sync_session_artifacts(session, "ex6-rasa-half")
 
         elif real:
             # Tier 2 — assume Rasa is already running.
@@ -80,7 +84,10 @@ async def run_scenario(real: bool, auto: bool) -> int:
             rasa_url = "http://localhost:5005/webhooks/rest/webhook"
             print(f"   Rasa URL: {rasa_url}")
             half = RasaStructuredHalf(rasa_url=rasa_url, request_timeout_s=30.0)
-            result = await half.run(session, sample_booking)
+            try:
+                result = await half.run(session, sample_booking)
+            finally:
+                sync_session_artifacts(session, "ex6-rasa-half")
 
         else:
             # Tier 1 — mock.
@@ -89,7 +96,10 @@ async def run_scenario(real: bool, auto: bool) -> int:
             try:
                 print(f"   Mock URL: {mock_url}")
                 half = RasaStructuredHalf(rasa_url=mock_url)
-                result = await half.run(session, sample_booking)
+                try:
+                    result = await half.run(session, sample_booking)
+                finally:
+                    sync_session_artifacts(session, "ex6-rasa-half")
             finally:
                 server.shutdown()
 
@@ -98,8 +108,8 @@ async def run_scenario(real: bool, auto: bool) -> int:
         print(f"  output:  {result.output}")
 
         if real:
-            print(f"\n📂 Session artifacts: {session.directory}")
-            print(f"📜 Narrate this run:   make narrate SESSION={session.session_id}")
+            print(f"\n[OK] Session artifacts: {session.directory}")
+            print(f"[INFO] Narrate this run:   make narrate SESSION={session.session_id}")
 
         return 0 if result.success else 1
 
@@ -108,7 +118,7 @@ def main() -> None:
     real = "--real" in sys.argv
     auto = "--auto" in sys.argv
     if auto and not real:
-        print("✗ --auto requires --real", file=sys.stderr)
+        print("[FAIL] --auto requires --real", file=sys.stderr)
         sys.exit(2)
     sys.exit(asyncio.run(run_scenario(real=real, auto=auto)))
 

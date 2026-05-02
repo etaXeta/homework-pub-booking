@@ -73,8 +73,36 @@ class RasaStructuredHalf(StructuredHalf):
         }
 
     async def run(self, session: Session, input_payload: dict) -> HalfResult:
+        from sovereign_agent.session.state import now_utc
+
+        session.append_trace_event(
+            {
+                "event_type": "session.created",
+                "actor": "rasa",
+                "timestamp": now_utc().isoformat(),
+                "payload": {"scenario": "ex6-rasa"},
+            }
+        )
+
+        session.append_trace_event(
+            {
+                "event_type": "executor.turn_started",
+                "actor": "rasa",
+                "timestamp": now_utc().isoformat(),
+                "payload": {"turn": 1},
+            }
+        )
+
         data = input_payload.get("data") if isinstance(input_payload, dict) else None
         if not data:
+            session.append_trace_event(
+                {
+                    "event_type": "session.failed",
+                    "actor": "rasa",
+                    "timestamp": now_utc().isoformat(),
+                    "payload": {"reason": "input_payload missing 'data' dict"},
+                }
+            )
             return HalfResult(
                 success=False,
                 output={"error": "input_payload missing 'data' dict"},
@@ -85,6 +113,14 @@ class RasaStructuredHalf(StructuredHalf):
         try:
             rasa_msg = normalise_booking_payload(data)
         except Exception as e:  # noqa: BLE001
+            session.append_trace_event(
+                {
+                    "event_type": "session.failed",
+                    "actor": "rasa",
+                    "timestamp": now_utc().isoformat(),
+                    "payload": {"reason": f"normalisation failed: {e}"},
+                }
+            )
             return HalfResult(
                 success=False,
                 output={"error": str(e), "raw": data},
@@ -107,6 +143,17 @@ class RasaStructuredHalf(StructuredHalf):
             method="POST",
         )
 
+        session.append_trace_event(
+            {
+                "event_type": "executor.tool_called",
+                "actor": "rasa",
+                "timestamp": now_utc().isoformat(),
+                "payload": {
+                    "tool": "rasa_webhook",
+                    "arguments": {"url": self.rasa_url, "sender": rasa_msg["sender"]},
+                },
+            }
+        )
         try:
             raw_response = await asyncio.get_event_loop().run_in_executor(
                 None,
@@ -177,7 +224,7 @@ class RasaStructuredHalf(StructuredHalf):
                 rejection_reason = text or "rejected by rasa"
 
         if confirmed and not rejected:
-            return HalfResult(
+            res = HalfResult(
                 success=True,
                 output={
                     "committed": True,
@@ -188,9 +235,26 @@ class RasaStructuredHalf(StructuredHalf):
                 summary=f"booking confirmed by rasa (ref={booking_reference})",
                 next_action="complete",
             )
+            session.append_trace_event(
+                {
+                    "event_type": "executor.complete",
+                    "actor": "rasa",
+                    "timestamp": now_utc().isoformat(),
+                    "payload": {"reason": res.summary},
+                }
+            )
+            session.append_trace_event(
+                {
+                    "event_type": "session.completed",
+                    "actor": "rasa",
+                    "timestamp": now_utc().isoformat(),
+                    "payload": {},
+                }
+            )
+            return res
 
         if rejected:
-            return HalfResult(
+            res = HalfResult(
                 success=False,
                 output={
                     "rejected": True,
@@ -201,8 +265,17 @@ class RasaStructuredHalf(StructuredHalf):
                 summary=f"rasa rejected: {rejection_reason}",
                 next_action="escalate",
             )
+            session.append_trace_event(
+                {
+                    "event_type": "session.failed",
+                    "actor": "rasa",
+                    "timestamp": now_utc().isoformat(),
+                    "payload": {"reason": res.summary},
+                }
+            )
+            return res
 
-        return HalfResult(
+        res = HalfResult(
             success=False,
             output={
                 "rasa_response": messages,
@@ -211,6 +284,15 @@ class RasaStructuredHalf(StructuredHalf):
             summary="rasa returned unexpected output",
             next_action="escalate",
         )
+        session.append_trace_event(
+            {
+                "event_type": "session.failed",
+                "actor": "rasa",
+                "timestamp": now_utc().isoformat(),
+                "payload": {"reason": res.summary},
+            }
+        )
+        return res
 
 
 # ─────────────────────────────────────────────────────────────────────

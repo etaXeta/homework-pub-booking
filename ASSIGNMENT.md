@@ -181,7 +181,7 @@ and may or may not accept the booking.
 
 2. **Voice loop** in `voice_loop.py` — STT → agent → TTS round-trip:
    - Text mode (`--text`): reads from stdin, prints responses.
-   - Voice mode (`--voice`): uses Speechmatics for STT and ElevenLabs for TTS.
+   - Voice mode (`--voice`): uses Speechmatics for STT and Rime.ai for TTS.
    - In both modes, the conversation is logged to the session as trace events
      with the correct event types (`voice.utterance_in`, `voice.utterance_out`).
 

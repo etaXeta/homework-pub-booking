@@ -9,11 +9,12 @@ import sys
 from sovereign_agent._internal.paths import user_data_dir
 from sovereign_agent.session.directory import create_session
 
+from scripts.session_utils import sync_session_artifacts
 from starter.voice_pipeline.manager_persona import ManagerPersona
 from starter.voice_pipeline.voice_loop import run_text_mode, run_voice_mode
 
 
-async def main_async(voice: bool) -> int:
+async def main_async(voice: bool, device_id: int | None = None) -> int:
     sessions_root = user_data_dir() / "homework" / "ex8"
     sessions_root.mkdir(parents=True, exist_ok=True)
 
@@ -26,23 +27,33 @@ async def main_async(voice: bool) -> int:
     print(f"  dir: {session.directory}")
 
     if not os.environ.get("NEBIUS_KEY"):
-        print("✗ NEBIUS_KEY not set. Run 'make verify' first.", file=sys.stderr)
+        print("[FAIL] NEBIUS_KEY not set. Run 'make verify' first.", file=sys.stderr)
         return 1
 
     persona = ManagerPersona.from_env()
 
-    if voice:
-        await run_voice_mode(session, persona)
-    else:
-        await run_text_mode(session, persona)
-
+    try:
+        if voice:
+            await run_voice_mode(session, persona, device_id=device_id)
+        else:
+            await run_text_mode(session, persona)
+    finally:
+        sync_session_artifacts(session, "ex8-voice-pipeline")
     return 0
 
 
 def main() -> None:
     voice = "--voice" in sys.argv
+    device_id = None
+    for arg in sys.argv:
+        if arg.startswith("--device="):
+            try:
+                device_id = int(arg.split("=")[1])
+            except (ValueError, IndexError):
+                pass
+
     # --text is the default and can also be passed explicitly
-    sys.exit(asyncio.run(main_async(voice=voice)))
+    sys.exit(asyncio.run(main_async(voice=voice, device_id=device_id)))
 
 
 if __name__ == "__main__":

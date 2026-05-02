@@ -2,25 +2,25 @@
 
 ## Your answer
 
-The planner produced two subgoals: sg_1 (research venues near Haymarket
-for a party of 6, assigned to loop) and sg_2 (produce a flyer with the
-chosen venue, weather, and cost, also loop). Both ran in the same
-executor session.
+The planner produced five subgoals (sg_1 to sg_5) to research an Edinburgh
+pub, check the weather, calculate costs, and produce a flyer. All subgoals
+were assigned to the loop half.
 
-Turn 1 called venue_search, get_weather, and calculate_cost in parallel
-— all three are parallel_safe because they only read fixtures. Turn 2
-wrote the flyer via generate_flyer (parallel_safe=False because it
-writes a file). Turn 3 called complete_task.
+Execution in `sess_04f5334d7d7b` showed significant live-model drift. The
+executor initially struggled with the required tool sequence, attempting
+to hand off to structured mode (which was disabled) and trying to complete
+the task before all required tools had successfully run. It eventually
+drifted into redundant searches for "city center" and "Old Town" before
+triggering the deterministic recovery mechanism in the scenario runner.
 
-The dataflow integrity check caught one issue during development: the
-template for "no deposit required" originally read "total under £300
-threshold", which put £300 in the flyer prose. That value was never
-returned by any tool — it's a rule threshold, not data. I simplified
-the phrasing to "No deposit required for this booking." Without the
-integrity check this would have slipped past review because £300 looks
-like a reasonable number in the right context.
+The recovery mechanism executed the canonical tool chain (`venue_search` ->
+`get_weather` -> `calculate_cost` -> `generate_flyer`) to produce the final
+`workspace/flyer.md` for the Haymarket Tap. The dataflow integrity check
+verified four key facts in the flyer (Venue Name, Weather, Total Cost, and
+Deposit) against the tool call logs, ensuring no hallucinations were
+present in the final artifact.
 
 ## Citations
 
-- sessions/sess_*/logs/trace.jsonl — tool call sequence
-- sessions/sess_*/workspace/flyer.md — the produced flyer
+- `sessions/ex5-edinburgh-research/sess_04f5334d7d7b/logs/trace.jsonl` — tool call sequence and drift recovery
+- `sessions/ex5-edinburgh-research/sess_04f5334d7d7b/workspace/flyer.md` — the produced flyer
