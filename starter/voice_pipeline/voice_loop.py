@@ -21,8 +21,8 @@ import asyncio
 import io
 import os
 import sys
-import wave
 import warnings
+import wave
 
 from sovereign_agent.session.directory import Session
 from sovereign_agent.session.state import now_utc
@@ -248,7 +248,9 @@ def _record_until_silence(sd, session: Session, turn: int, device_id: int | None
 
     with sd.InputStream(**stream_args) as stream:
         actual_device = sd.query_devices(stream.device, "input")["name"]
-        print(f"   [DEBUG] Using input device: {actual_device} (ID: {stream.device})", file=sys.stderr)
+        print(
+            f"   [DEBUG] Using input device: {actual_device} (ID: {stream.device})", file=sys.stderr
+        )
         while True:
             data, _overflow = stream.read(chunk_samples)
             if hasattr(data, "tobytes"):
@@ -315,7 +317,6 @@ async def _transcribe_speechmatics(
     Uses the batch-via-realtime pattern: one connection, push all bytes,
     await final results. Simpler than true streaming for this use case.
     """
-    import io
 
     transcripts: list[str] = []
 
@@ -388,12 +389,14 @@ async def _speak_elevenlabs(text: str, api_key: str, sd) -> None:
     # Decode MP3 → PCM
     try:
         from io import BytesIO
+
         import numpy as np
 
         try:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning, module="pydub.utils")
                 from pydub import AudioSegment  # type: ignore[import-not-found]
+
                 segment = AudioSegment.from_file(BytesIO(mp3_bytes), format="mp3")
             # Resample + convert to int16 mono for sounddevice
             segment = segment.set_frame_rate(SAMPLE_RATE).set_channels(1).set_sample_width(2)
@@ -402,22 +405,26 @@ async def _speak_elevenlabs(text: str, api_key: str, sd) -> None:
             # Fallback to pure-python 'mp3' (pymp3) library if pydub/ffmpeg fails
             try:
                 import mp3
+
                 decoder = mp3.Decoder(BytesIO(mp3_bytes))
                 if not decoder.is_valid():
                     raise RuntimeError("Invalid MP3 data")
-                
+
                 # pymp3 read() returns bytes (int16 samples)
-                raw_bytes = decoder.read(10 * 60 * decoder.get_sample_rate() * decoder.get_channels() * 2)
+                raw_bytes = decoder.read(
+                    10 * 60 * decoder.get_sample_rate() * decoder.get_channels() * 2
+                )
                 samples = np.frombuffer(raw_bytes, dtype=np.int16)
-                
+
                 # Basic mono conversion if needed (assuming pymp3 returns interleaved)
                 if decoder.get_channels() > 1:
                     samples = samples.reshape(-1, decoder.get_channels())
                     samples = samples.mean(axis=1).astype(np.int16)
-                
+
                 # Resample if needed (very simple decimation/duplication for 16k/22k/44k)
                 if decoder.get_sample_rate() != SAMPLE_RATE:
                     import scipy.signal
+
                     # If scipy is not available, we just play at original rate or error
                     try:
                         num_samples = int(len(samples) * SAMPLE_RATE / decoder.get_sample_rate())
@@ -472,12 +479,14 @@ async def _speak_rime(text: str, api_key: str, sd) -> None:
     # Decode MP3 → PCM
     try:
         from io import BytesIO
+
         import numpy as np
 
         try:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning, module="pydub.utils")
                 from pydub import AudioSegment  # type: ignore[import-not-found]
+
                 segment = AudioSegment.from_file(BytesIO(mp3_bytes), format="mp3")
             # Resample + convert to int16 mono for sounddevice
             segment = segment.set_frame_rate(SAMPLE_RATE).set_channels(1).set_sample_width(2)
@@ -486,18 +495,21 @@ async def _speak_rime(text: str, api_key: str, sd) -> None:
             # Fallback to pure-python 'mp3' (pymp3) library if pydub/ffmpeg fails
             try:
                 import mp3
+
                 decoder = mp3.Decoder(BytesIO(mp3_bytes))
                 if not decoder.is_valid():
                     raise RuntimeError("Invalid MP3 data")
-                
+
                 # pymp3 read() returns bytes (int16 samples)
-                raw_bytes = decoder.read(10 * 60 * decoder.get_sample_rate() * decoder.get_channels() * 2)
+                raw_bytes = decoder.read(
+                    10 * 60 * decoder.get_sample_rate() * decoder.get_channels() * 2
+                )
                 samples = np.frombuffer(raw_bytes, dtype=np.int16)
-                
+
                 if decoder.get_channels() > 1:
                     samples = samples.reshape(-1, decoder.get_channels())
                     samples = samples.mean(axis=1).astype(np.int16)
-                
+
                 if decoder.get_sample_rate() != SAMPLE_RATE:
                     # If we can't resample, play at the decoder's rate
                     sd.play(samples, samplerate=decoder.get_sample_rate())
